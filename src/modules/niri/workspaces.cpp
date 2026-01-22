@@ -19,10 +19,15 @@ Workspace::Workspace(const Json::Value& config, const uint64_t id, const std::st
   button_.set_name("niri-workspace-" + name_);
 
   taskBarConfig_ = config_["workspace-taskbar"];
-  if (taskBarConfig_.get("enable", false).asBool())
+  const auto taskbarOnly = taskBarConfig_.get("taskbar-only", false).asBool();
+
+  if (taskbarOnly) {
+    // In taskbar-only mode, don't show workspace label at all
+  } else if (taskBarConfig_.get("enable", false).asBool()) {
     content_.pack_start(label_, false, false);
-  else
+  } else {
     content_.set_center_widget(label_);
+  }
   // label_.set_label(name_);
 
   label_.get_style_context()->add_class("workspace-label");
@@ -73,7 +78,8 @@ std::string Workspace::getIcon(const std::string& value, const Json::Value& ws) 
 
 void Workspace::updateTaskbar(const std::vector<Json::Value>& windows_data,
                               const uint64_t active_window_id) {
-  if (!taskBarConfig_.get("enable", false).asBool()) return;
+  const auto taskbarOnly = taskBarConfig_.get("taskbar-only", false).asBool();
+  if (!taskBarConfig_.get("enable", false).asBool() && !taskbarOnly) return;
 
   for (auto child : content_.get_children()) {
     if (child != &label_) {
@@ -284,6 +290,8 @@ void Workspaces::doUpdate() {
   auto ipcLock = gIPC->lockData();
 
   const auto alloutputs = config_["all-outputs"].asBool();
+  const auto taskbarOnly = config_["workspace-taskbar"].get("taskbar-only", false).asBool();
+
   std::vector<Json::Value> my_workspaces;
   const auto& workspaces = gIPC->workspaces();
   std::copy_if(workspaces.cbegin(), workspaces.cend(), std::back_inserter(my_workspaces),
@@ -291,6 +299,23 @@ void Workspaces::doUpdate() {
                  if (alloutputs) return true;
                  return ws["output"].asString() == bar_.output->name;
                });
+
+  // In taskbar-only mode, only show the focused workspace's windows
+  if (taskbarOnly) {
+    // Find the focused workspace
+    auto focused_ws = std::find_if(my_workspaces.begin(), my_workspaces.end(),
+                                   [](const auto& ws) { return ws["is_focused"].asBool(); });
+    if (focused_ws == my_workspaces.end()) {
+      // No focused workspace on this output, try active
+      focused_ws = std::find_if(my_workspaces.begin(), my_workspaces.end(),
+                                [](const auto& ws) { return ws["is_active"].asBool(); });
+    }
+    if (focused_ws != my_workspaces.end()) {
+      my_workspaces = {*focused_ws};
+    } else {
+      my_workspaces.clear();
+    }
+  }
 
   // Remove buttons for removed workspaces.
   for (auto it = workspaces_.begin(); it != workspaces_.end();) {
@@ -322,7 +347,7 @@ void Workspaces::doUpdate() {
     const auto& ws = *it;
 
     auto pos = ws["idx"].asUInt() - 1;
-    if (alloutputs) pos = it - my_workspaces.cbegin();
+    if (alloutputs || taskbarOnly) pos = it - my_workspaces.cbegin();
 
     auto& button = workspaces_[ws["id"].asUInt64()]->button();
     box_.reorder_child(button, pos);
