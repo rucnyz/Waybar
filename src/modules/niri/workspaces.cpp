@@ -4,6 +4,9 @@
 #include <gtkmm/label.h>
 #include <spdlog/spdlog.h>
 
+#include <map>
+#include <set>
+
 #include "util/command.hpp"
 #include "util/string.hpp"
 
@@ -123,10 +126,29 @@ void Workspace::updateTaskbar(const std::vector<Json::Value>& windows_data,
                 return true;  // Tiled windows before floating
               }
 
-              // Both are tiled windows - sort by position
-              return layoutA["pos_in_scrolling_layout"][0].asInt() <
-                     layoutB["pos_in_scrolling_layout"][0].asInt();
+              // Both are tiled windows - sort by position (column, then tile)
+              auto colA = layoutA["pos_in_scrolling_layout"][0].asInt();
+              auto colB = layoutB["pos_in_scrolling_layout"][0].asInt();
+              if (colA != colB) return colA < colB;
+              return layoutA["pos_in_scrolling_layout"][1].asInt() <
+                     layoutB["pos_in_scrolling_layout"][1].asInt();
             });
+
+  // Build a set of columns that have stacked windows (multiple tiles in same column)
+  std::set<int> stacked_columns;
+  std::map<int, int> column_tile_count;
+  for (const auto& window : sorted_windows_data) {
+    if (window["workspace_id"].asUInt64() != id_) continue;
+    auto layout = window["layout"];
+    if (!layout["pos_in_scrolling_layout"].isNull()) {
+      int col = layout["pos_in_scrolling_layout"][0].asInt();
+      column_tile_count[col]++;
+      if (column_tile_count[col] > 1) {
+        stacked_columns.insert(col);
+      }
+    }
+  }
+
   int window_count = 0;
   for (const auto& window : sorted_windows_data) {
     if (window["workspace_id"].asUInt64() != id_) continue;
@@ -148,6 +170,14 @@ void Workspace::updateTaskbar(const std::vector<Json::Value>& windows_data,
     if (window["is_urgent"].asBool()) window_box->get_style_context()->add_class("urgent");
     if (window["id"].asUInt64() == active_window_id)
       window_box->get_style_context()->add_class("active");
+    // Add stacked class for windows in columns with multiple tiles
+    auto layout = window["layout"];
+    if (!layout["pos_in_scrolling_layout"].isNull()) {
+      int col = layout["pos_in_scrolling_layout"][0].asInt();
+      if (stacked_columns.count(col) > 0) {
+        window_box->get_style_context()->add_class("stacked");
+      }
+    }
     auto event_box = Gtk::make_managed<Gtk::EventBox>();
     event_box->add(*window_box);
     if (!config_["disable-click"].asBool()) {
