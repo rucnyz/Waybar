@@ -178,8 +178,20 @@ Mpris::Mpris(const std::string& id, const Json::Value& config)
 }
 
 Mpris::~Mpris() {
-  if (manager != nullptr) g_object_unref(manager);
-  if (player != nullptr) g_object_unref(player);
+  // Stop the update thread first
+  thread_.stop();
+
+  // Disconnect all signal handlers before releasing objects
+  if (player != nullptr) {
+    g_signal_handlers_disconnect_by_data(player, this);
+    g_object_unref(player);
+    player = nullptr;
+  }
+  if (manager != nullptr) {
+    g_signal_handlers_disconnect_by_data(manager, this);
+    g_object_unref(manager);
+    manager = nullptr;
+  }
 }
 
 auto Mpris::getIconFromJson(const Json::Value& icons, const std::string& key) -> std::string {
@@ -410,11 +422,20 @@ auto Mpris::onPlayerNameAppeared(PlayerctlPlayerManager* manager, PlayerctlPlaye
     return;
   }
 
+  // Clean up existing player if any (prevent memory leak and signal confusion)
+  if (mpris->player != nullptr) {
+    g_signal_handlers_disconnect_by_data(mpris->player, mpris);
+    g_object_unref(mpris->player);
+    mpris->player = nullptr;
+  }
+
   mpris->player = playerctl_player_new_from_name(player_name, nullptr);
-  g_object_connect(mpris->player, "signal::play", G_CALLBACK(onPlayerPlay), mpris, "signal::pause",
-                   G_CALLBACK(onPlayerPause), mpris, "signal::stop", G_CALLBACK(onPlayerStop),
-                   mpris, "signal::stop", G_CALLBACK(onPlayerStop), mpris, "signal::metadata",
-                   G_CALLBACK(onPlayerMetadata), mpris, NULL);
+  if (mpris->player != nullptr) {
+    g_object_connect(mpris->player, "signal::play", G_CALLBACK(onPlayerPlay), mpris, "signal::pause",
+                     G_CALLBACK(onPlayerPause), mpris, "signal::stop", G_CALLBACK(onPlayerStop),
+                     mpris, "signal::stop", G_CALLBACK(onPlayerStop), mpris, "signal::metadata",
+                     G_CALLBACK(onPlayerMetadata), mpris, NULL);
+  }
 
   mpris->dp.emit();
 }
@@ -429,7 +450,12 @@ auto Mpris::onPlayerNameVanished(PlayerctlPlayerManager* manager, PlayerctlPlaye
   if (mpris->player_ == "playerctld") {
     mpris->dp.emit();
   } else if (mpris->player_ == player_name->name) {
-    mpris->player = nullptr;
+    // Disconnect signal handlers and release the player before setting to nullptr
+    if (mpris->player != nullptr) {
+      g_signal_handlers_disconnect_by_data(mpris->player, mpris);
+      g_object_unref(mpris->player);
+      mpris->player = nullptr;
+    }
     mpris->event_box_.set_visible(false);
     mpris->dp.emit();
   }
